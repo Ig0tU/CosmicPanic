@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Echo Labyrinth OMEGA - Latest Build</title>
+<style>
+body{
+    margin:0;
+    background:#050507;
+    overflow:hidden;
+    font-family: monospace;
+    color:white;
+    touch-action: none; /* Prevent scrolling on touch */
+}
+
+#hud{
+    position:absolute;
+    top:15px;
+    left:15px;
+    font-size:16px;
+    text-shadow: 1px 1px 2px black;
+    pointer-events: none;
+    z-index: 10;
+}
+
+#upgrade{
+    position:absolute;
+    inset:0;
+    background:rgba(5, 5, 7, 0.9);
+    display:none;
+    align-items:center;
+    justify-content:center;
+    flex-direction:column;
+    gap:20px;
+    z-index: 20;
+}
+
+.card{
+    border:2px solid #8b5cf6;
+    background: rgba(139, 92, 246, 0.1);
+    padding:20px;
+    width:260px;
+    max-width: 80%;
+    text-align:center;
+    cursor:pointer;
+    transition: 0.2s;
+    font-weight: bold;
+    letter-spacing: 1px;
+}
+
+.card:hover {
+    background: rgba(139, 92, 246, 0.4);
+    transform: scale(1.05);
+}
+
+#xp-bar-container {
+    width: 200px;
+    max-width: 100%;
+    height: 10px;
+    background: #222;
+    margin-top: 5px;
+    border: 1px solid #555;
+}
+
+#xp-bar {
+    width: 0%;
+    height: 100%;
+    background: #fbbf24;
+    transition: width 0.2s;
+}
+
+/* Touch controls for mobile */
+#touch-controls {
+    display: none;
+    position: absolute;
+    bottom: 20px;
+    left: 0;
+    width: 100%;
+    justify-content: space-between;
+    padding: 0 20px;
+    box-sizing: border-box;
+    pointer-events: none;
+}
+
+.touch-btn {
+    width: 60px;
+    height: 60px;
+    background: rgba(139, 92, 246, 0.3);
+    border: 2px solid #8b5cf6;
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    color: white;
+    font-weight: bold;
+    pointer-events: auto;
+    user-select: none;
+}
+
+@media (max-width: 768px) {
+    #touch-controls {
+        display: flex;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<canvas id="c"></canvas>
+
+<div id="hud">
+    <div style="font-size: 20px; font-weight: bold; color: #8b5cf6;">ECHO LABYRINTH OMEGA</div>
+    Score: <span id="score">0</span><br>
+    Level: <span id="level">1</span><br>
+    Shield: <span id="shield">3</span> / <span id="maxShield">3</span><br>
+    <div id="xp-bar-container"><div id="xp-bar"></div></div>
+</div>
+
+<div id="upgrade"></div>
+
+<div id="touch-controls">
+    <div class="touch-btn" id="btn-dash">DASH</div>
+    <div class="touch-btn" id="btn-fire">FIRE</div>
+</div>
+
+<script>
+const canvas=document.getElementById("c");
+const ctx=canvas.getContext("2d");
+
+let W, H;
+function resize(){
+    W=canvas.width=innerWidth;
+    H=canvas.height=innerHeight;
+}
+resize();
+addEventListener("resize",resize);
+
+// Game State
+let score=0;
+let level=1;
+let xp=0;
+let xpMax=100;
+let time=0;
+let threat=0;
+
+// Polish / Juice
+let shakeTime=0;
+let shakeMag=0;
+let stars=[];
+
+// Entity Arrays
+let particles=[];
+let enemies=[];
+let shards=[];
+let projectiles=[];
+let drones=[];
+let mines=[];
+let trails=[]; // For visual trails
+
+// Player Object
+const player={
+    x:W/2,
+    y:H/2,
+    r:14,
+    vx:0,
+    vy:0,
+    speed:6,
+    shield:3,
+    maxShield:3,
+    shieldRegenTimer:0,
+    dash:0,
+    weapon:"pulse",
+    fire:0,
+    targetX: W/2,
+    targetY: H/2
+};
+
+// === CHIptune SOUNDTRACK ENGINE ===
+const musicTracks = [
+    './chip_music/1.mp3',
+    './chip_music/2.mp3',
+    './chip_music/3.mp3',
+    './chip_music/4.mp3'
+];
+let currentAudio = null;
+let musicVolume = 0.6;
+
+function playMusic(index) {
+    if (currentAudio) {
+        currentAudio.pause();
+        currentAudio.currentTime = 0;
+    }
+    currentAudio = new Audio(musicTracks[index % musicTracks.length]);
+    currentAudio.volume = musicVolume;
+    currentAudio.loop = true;
+    currentAudio.play().catch(e => console.log('Music autoplay blocked (local file ok on reload):', e));
+}
+
+function nextMusic() {
+    const nextIndex = Math.floor(Math.random() * musicTracks.length);
+    playMusic(nextIndex);
+    // quick flash on track change
+    triggerShake(8, 3);
+}
+
+// Initialize Parallax Starfield
+for(let i=0; i<150; i++) {
+    stars.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        s: Math.random() * 2 + 0.5,
+        alpha: Math.random()
+    });
+}
+
+function dist(a,b,c,d){ return Math.hypot(a-c,b-d); }
+function rand(a,b){ return a+Math.random()*(b-a); }
+
+function spawnShard(){
+    shards.push({ x:rand(40,W-40), y:rand(40,H-40) });
+}
+for(let i=0;i<12;i++) spawnShard();
+
+function spawnEnemy(){
+    let r=Math.random();
+    if(r<.4){
+        enemies.push({ type:"sentinel", x:rand(0,W), y:rand(0,H), tx:rand(0,W), ty:rand(0,H), fire:100 });
+    } else if(r<.7){
+        enemies.push({ type:"hunter", x:rand(0,W), y:rand(0,H), vx:0, vy:0 });
+    } else {
+        enemies.push({ type:"miner", x:rand(0,W), y:rand(0,H), drop:200 });
+    }
+}
+
+function spawnBoss(){
+    enemies.push({ type:"boss", x:W/2, y:80, hp:400, cool:0 });
+    nextMusic(); // boss = new banger
+}
+
+function explosion(x,y,color,n=30){
+    for(let i=0;i<n;i++){
+        particles.push({
+            x, y,
+            vx:rand(-5,5),
+            vy:rand(-5,5),
+            life:1,
+            c:color
+        });
+    }
+}
+
+function triggerShake(duration, magnitude) {
+    shakeTime = duration;
+    shakeMag = magnitude;
+}
+
+let magnet=0;
+let isPaused=false;
+
+function upgradeScreen(){
+    isPaused = true;
+    if (currentAudio) currentAudio.pause();
+    const upgrade=document.getElementById("upgrade");
+    upgrade.style.display="flex";
+    upgrade.innerHTML="<h2 style='color:#fbbf24; margin-bottom: 30px; text-align: center;'>SYSTEM OVERRIDE DETECTED // SELECT UPGRADE</h2>";
+
+    const pool=[
+        {name:"OVERCLOCK (Speed Up)", f:()=>player.speed+=1.5},
+        {name:"TACTICAL DRONE", f:()=>drones.push({a:rand(0,6),r:60,cd:0})},
+        {name:"MAGNETIC FIELD", f:()=>magnet=1},
+        {name:"SHIELD BATTERY (+1 Max)", f:()=>{player.maxShield++; player.shield=player.maxShield;}},
+        {name:"SPREAD SHOT", f:()=>player.weapon="spread"},
+        {name:"RAILGUN SHOT", f:()=>player.weapon="rail"}
+    ];
+
+    let shuffled = pool.sort(() => 0.5 - Math.random());
+    let selected = shuffled.slice(0, 3);
+
+    for(let p of selected){
+        let card=document.createElement("div");
+        card.className="card";
+        card.innerText=p.name;
+        card.onclick=()=>{
+            p.f();
+            upgrade.style.display="none";
+            isPaused = false;
+            if (currentAudio) currentAudio.play();
+        };
+        upgrade.appendChild(card);
+    }
+}
+
+function fireWeapon(){
+    if(player.fire>0)return;
+    player.fire=12;
+
+    if(player.weapon==="pulse"){
+        projectiles.push({ x:player.x, y:player.y, vx:0, vy:-10, friendly:1 });
+    }
+    if(player.weapon==="spread"){
+        for(let i=-1;i<=1;i++){
+            projectiles.push({ x:player.x, y:player.y, vx:i*2.5, vy:-10, friendly:1 });
+        }
+    }
+    if(player.weapon==="rail"){
+        for(let i=0;i<6;i++){
+            projectiles.push({ x:player.x, y:player.y-i*20, vx:0, vy:-15, friendly:1 });
+        }
+    }
+}
+
+function gainXp(amount) {
+    xp += amount;
+    score += amount * 10;
+    if(xp >= xpMax) {
+        xp -= xpMax;
+        xpMax = Math.floor(xpMax * 1.5);
+        level++;
+        triggerShake(10, 5);
+        explosion(player.x, player.y, "#8b5cf6", 50);
+        nextMusic(); // level up = new chiptune
+        upgradeScreen();
+    }
+}
+
+function damage(){
+    player.shield--;
+    player.shieldRegenTimer = 300;
+    triggerShake(15, 8);
+    explosion(player.x,player.y,"#ff4444",50);
+
+    if(player.shield<=0){
+        if (currentAudio) currentAudio.pause();
+        let msg = document.createElement('div');
+        msg.style.position = 'absolute';
+        msg.style.top = '50%';
+        msg.style.left = '50%';
+        msg.style.transform = 'translate(-50%, -50%)';
+        msg.style.background = 'rgba(255, 0, 0, 0.8)';
+        msg.style.padding = '20px';
+        msg.style.border = '2px solid white';
+        msg.style.textAlign = 'center';
+        msg.style.zIndex = '100';
+        msg.innerHTML = `<h2>CRITICAL FAILURE</h2><p>Final Score: ${score}</p><p>Level Reached: ${level}</p><button onclick="location.reload()" style="padding:10px; cursor:pointer;">REBOOT</button>`;
+        document.body.appendChild(msg);
+        isPaused = true;
+    }
+}
+
+function update(){
+    if(isPaused) return;
+
+    time++;
+    threat=(time/1500)+(score/5000);
+
+    if(Math.random()<threat*.025) spawnEnemy();
+    if(time%3000===0) spawnBoss();
+
+    if(Object.values(keys).every(v => !v) && (player.targetX !== player.x || player.targetY !== player.y)) {
+        let dx = player.targetX - player.x;
+        let dy = player.targetY - player.y;
+        let d = Math.hypot(dx, dy);
+        if(d > 5) {
+            player.vx += (dx / d) * player.speed * 0.1;
+            player.vy += (dy / d) * player.speed * 0.1;
+        }
+    }
+
+    player.x+=player.vx;
+    player.y+=player.vy;
+    player.vx*=.85;
+    player.vy*=.85;
+    player.x=Math.max(20,Math.min(W-20,player.x));
+    player.y=Math.max(20,Math.min(H-20,player.y));
+
+    if(player.dash > 0) player.dash--;
+    if(player.fire>0) player.fire--;
+
+    if(player.shield < player.maxShield && player.shield > 0) {
+        if(player.shieldRegenTimer > 0) {
+            player.shieldRegenTimer--;
+        } else {
+            player.shield++;
+            player.shieldRegenTimer = 200;
+            explosion(player.x, player.y, "#0ea5e9", 15);
+        }
+    }
+
+    if(Math.abs(player.vx)>1 || Math.abs(player.vy)>1) {
+        trails.push({x: player.x, y: player.y, life: 1, c: "#8b5cf6"});
+    }
+
+    for(let s of shards){
+        if(magnet){
+            let d=dist(player.x,player.y,s.x,s.y);
+            if(d<250){
+                s.x+=(player.x-s.x)*.08;
+                s.y+=(player.y-s.y)*.08;
+            }
+        }
+        if(dist(player.x,player.y,s.x,s.y)<35){
+            gainXp(20);
+            explosion(s.x,s.y,"#fbbf24", 10);
+            s.x=rand(40,W-40);
+            s.y=rand(40,H-40);
+        }
+    }
+
+    for(let i = enemies.length - 1; i >= 0; i--) {
+        let e = enemies[i];
+        
+        if(e.type==="sentinel"){
+            let d=dist(e.x,e.y,e.tx,e.ty);
+            if(d<10){ e.tx=rand(0,W); e.ty=rand(0,H); }
+            e.x+=(e.tx-e.x)*.015;
+            e.y+=(e.ty-e.y)*.015;
+            e.fire--;
+            if(e.fire<0){
+                let a=Math.atan2(player.y-e.y,player.x-e.x);
+                projectiles.push({ x:e.x, y:e.y, vx:Math.cos(a)*6, vy:Math.sin(a)*6 });
+                e.fire=100;
+            }
+        }
+        
+        if(e.type==="hunter"){
+            e.vx+=(player.x-e.x)*.003;
+            e.vy+=(player.y-e.y)*.003;
+            e.vx *= 0.95; e.vy *= 0.95;
+            e.x+=e.vx; e.y+=e.vy;
+            trails.push({x: e.x, y: e.y, life: 0.5, c: "#ef4444"});
+        }
+        
+        if(e.type==="miner"){
+            e.drop--;
+            if(e.drop<0){
+                mines.push({ x:e.x, y:e.y, timer:150 });
+                e.drop=150;
+            }
+        }
+        
+        if(e.type==="boss"){
+            e.cool--;
+            if(e.cool<0){
+                for(let j=0;j<24;j++){
+                    let a=j/24*Math.PI*2;
+                    projectiles.push({ x:e.x, y:e.y, vx:Math.cos(a)*5, vy:Math.sin(a)*5 });
+                }
+                e.cool=80;
+                triggerShake(5, 3);
+            }
+            if(e.hp <= 0) {
+                explosion(e.x, e.y, "#ff0077", 100);
+                triggerShake(20, 10);
+                score += 5000;
+                enemies.splice(i, 1);
+                continue;
+            }
+        }
+
+        if(dist(player.x,player.y,e.x,e.y)<player.r+12) {
+            damage();
+            if(e.type !== "boss") {
+                explosion(e.x, e.y, "#ef4444", 20);
+                enemies.splice(i, 1);
+            }
+        }
+    }
+
+    for(let p of projectiles){
+        p.x+=p.vx;
+        p.y+=p.vy;
+        trails.push({x: p.x, y: p.y, life: 0.8, c: p.friendly ? "#fff" : "#ff0077"});
+
+        if(!p.friendly && dist(player.x,player.y,p.x,p.y)<player.r+4){
+            damage();
+            p.dead=1;
+        }
+
+        if(p.friendly) {
+            for(let e of enemies) {
+                if(dist(p.x, p.y, e.x, e.y) < 20) {
+                    p.dead = 1;
+                    if(e.type === "boss") {
+                        e.hp -= 10;
+                    } else {
+                        explosion(e.x, e.y, "#ef4444", 20);
+                        e.dead = 1;
+                        gainXp(10);
+                    }
+                }
+            }
+        }
+    }
+    projectiles=projectiles.filter(p=>!p.dead);
+    enemies=enemies.filter(e=>!e.dead);
+
+    for(let d of drones){
+        d.a+=.04;
+        d.x=player.x+Math.cos(d.a)*d.r;
+        d.y=player.y+Math.sin(d.a)*d.r;
+        trails.push({x: d.x, y: d.y, life: 0.5, c: "#22c55e"});
+        d.cd--;
+        if(d.cd<0){
+            projectiles.push({ x:d.x, y:d.y, vx:rand(-2,2), vy:-12, friendly:1 });
+            d.cd=20;
+        }
+    }
+
+    for(let m of mines){
+        m.timer--;
+        if(m.timer<0){
+            explosion(m.x,m.y,"#ff8800",60);
+            triggerShake(5, 4);
+            if(dist(player.x,player.y,m.x,m.y)<85) damage();
+            m.dead=1;
+        }
+    }
+    mines=mines.filter(m=>!m.dead);
+
+    for(let p of particles){ p.x+=p.vx; p.y+=p.vy; p.life-=.03; }
+    particles=particles.filter(p=>p.life>0);
+
+    for(let t of trails){ t.life -= 0.1; }
+    trails = trails.filter(t=>t.life>0);
+
+    for(let s of stars) {
+        s.y += s.s * (1 + (player.vy * 0.05));
+        s.x -= player.vx * 0.05;
+        if(s.y > H) s.y = 0;
+        if(s.x > W) s.x = 0;
+        if(s.x < 0) s.x = W;
+    }
+
+    document.getElementById("score").innerText=score;
+    document.getElementById("level").innerText=level;
+    document.getElementById("shield").innerText=Math.max(0, player.shield);
+    document.getElementById("maxShield").innerText=player.maxShield;
+    document.getElementById("xp-bar").style.width = (xp / xpMax * 100) + "%";
+}
+
+function draw(){
+    ctx.save();
+    if(shakeTime > 0) {
+        let dx = rand(-shakeMag, shakeMag);
+        let dy = rand(-shakeMag, shakeMag);
+        ctx.translate(dx, dy);
+        shakeTime--;
+    }
+
+    ctx.fillStyle="#050507";
+    ctx.fillRect(0,0,W,H);
+    
+    for(let s of stars) {
+        ctx.globalAlpha = s.alpha;
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.s, 0, 7);
+        ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    for(let t of trails) {
+        ctx.globalAlpha = t.life;
+        ctx.fillStyle = t.c;
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, 4, 0, 7);
+        ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    for(let s of shards){
+        ctx.fillStyle="#fbbf24";
+        ctx.beginPath();
+        ctx.arc(s.x,s.y,6,0,7);
+        ctx.fill();
+    }
+
+    for(let e of enemies){
+        ctx.fillStyle=e.type==="boss"?"#ff0077":"#ef4444";
+        ctx.beginPath();
+        ctx.arc(e.x,e.y, e.type==="boss"?25:14,0,7);
+        ctx.fill();
+        
+        if(e.type==="boss") {
+            ctx.strokeStyle="#fff";
+            ctx.lineWidth=2;
+            ctx.beginPath();
+            ctx.arc(e.x, e.y, 35, 0, (e.hp/400) * Math.PI * 2);
+            ctx.stroke();
+        }
+    }
+
+    for(let p of projectiles){
+        ctx.fillStyle= p.friendly ? "#fff" : "#ff0077";
+        ctx.beginPath();
+        ctx.arc(p.x,p.y,4,0,7);
+        ctx.fill();
+    }
+
+    ctx.fillStyle="#8b5cf6";
+    ctx.beginPath();
+    ctx.arc(player.x,player.y,player.r,0,7);
+    ctx.fill();
+
+    if(player.shield > 0) {
+        ctx.strokeStyle = `rgba(14, 165, 233, ${player.shield / player.maxShield})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(player.x, player.y, player.r + 6, 0, 7);
+        ctx.stroke();
+    }
+
+    ctx.fillStyle="#fff";
+    ctx.beginPath();
+    ctx.arc(player.x,player.y,5,0,7);
+    ctx.fill();
+
+    for(let d of drones){
+        ctx.fillStyle="#22c55e";
+        ctx.beginPath();
+        ctx.arc(d.x,d.y,6,0,7);
+        ctx.fill();
+    }
+
+    for(let m of mines){
+        ctx.fillStyle="#ff8800";
+        ctx.beginPath();
+        ctx.arc(m.x,m.y,8,0,7);
+        ctx.fill();
+    }
+
+    for(let p of particles){
+        ctx.globalAlpha=p.life;
+        ctx.fillStyle=p.c;
+        ctx.fillRect(p.x,p.y,4,4);
+    }
+    ctx.globalAlpha=1;
+
+    ctx.restore();
+}
+
+function loop(){
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+
+// Start everything
+window.onload = function() {
+    playMusic(Math.floor(Math.random()*musicTracks.length)); // kick off chiptunes immediately
+    loop();
+};
+
+// Controls
+let keys={};
+addEventListener("keydown",e=>keys[e.key]=1);
+addEventListener("keyup",e=>keys[e.key]=0);
+
+setInterval(()=>{
+    if(keys.w || keys.ArrowUp) player.vy -= player.speed * 0.2;
+    if(keys.s || keys.ArrowDown) player.vy += player.speed * 0.2;
+    if(keys.a || keys.ArrowLeft) player.vx -= player.speed * 0.2;
+    if(keys.d || keys.ArrowRight) player.vx += player.speed * 0.2;
+    
+    if(player.vx > player.speed) player.vx = player.speed;
+    if(player.vx < -player.speed) player.vx = -player.speed;
+    if(player.vy > player.speed) player.vy = player.speed;
+    if(player.vy < -player.speed) player.vy = -player.speed;
+
+    if(keys[" "]) fireWeapon();
+},16);
+
+function doDash() {
+    if(player.dash<=0){
+        player.x += player.vx * 15;
+        player.y += player.vy * 15;
+        player.dash = 45;
+        triggerShake(5, 5);
+        explosion(player.x,player.y,"#8b5cf6", 20);
+    }
+}
+
+canvas.oncontextmenu = e => e.preventDefault();
+canvas.onmousedown = (e) => {
+    doDash();
+};
+
+canvas.addEventListener('mousemove', (e) => {
+    player.targetX = e.clientX;
+    player.targetY = e.clientY;
+});
+
+canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    if(e.touches.length > 0) {
+        player.targetX = e.touches[0].clientX;
+        player.targetY = e.touches[0].clientY;
+    }
+}, {passive: false});
+
+document.getElementById('btn-dash').addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    doDash();
+});
+
+document.getElementById('btn-fire').addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    fireWeapon();
+});
+</script>
+</body>
+</html>
