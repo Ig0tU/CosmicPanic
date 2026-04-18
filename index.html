@@ -18,6 +18,7 @@ body{
     position: absolute;
     inset: 0;
     background: radial-gradient(circle, #0a0a1a 0%, #020205 100%);
+    background: radial-gradient(circle, #1a1a2e 0%, #050507 100%);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -314,6 +315,13 @@ const MusicEngine = {
         // Modulate Drone
         this.droneGain.gain.value = 0.1 + (this.intensity * 0.2);
         this.lpf.frequency.value = 100 + (this.intensity * 800);
+// === CHIptune SOUNDTRACK ENGINE ===
+const musicTracks = [
+    'https://raw.githubusercontent.com/rdeioris/glTFRuntimeAudio/master/chiptune-ending-212716.mp3',
+    'https://raw.githubusercontent.com/OpenSourceMusic/This-Nonsense-Place/master/This%20Nonsense%20Place%20v1.0.mp3'
+];
+let currentAudio = null;
+let musicVolume = 0.6;
 
         // Pulsing Beat
         this.pulseTimer++;
@@ -758,6 +766,19 @@ function draw(){
     grd.addColorStop(1, "rgba(0,0,0,0.85)");
     ctx.fillStyle = grd;
     ctx.fillRect(0,0,W,H);
+
+    // --- CRT Scanlines & Vignette ---
+    // Scanlines
+    ctx.fillStyle = "rgba(18, 16, 16, 0.1)";
+    for(let i=0; i<H; i+=4) {
+        ctx.fillRect(0, i, W, 1);
+    }
+    // Vignette
+    let grd = ctx.createRadialGradient(W/2, H/2, W*0.2, W/2, H/2, W*0.7);
+    grd.addColorStop(0, "transparent");
+    grd.addColorStop(1, "rgba(0,0,0,0.6)");
+    ctx.fillStyle = grd;
+    ctx.fillRect(0,0,W,H);
     
     for(let s of stars) {
         ctx.globalAlpha = s.alpha;
@@ -883,6 +904,7 @@ document.getElementById('start-btn').onclick = function() {
     if (audioCtx.state === 'suspended') audioCtx.resume();
     document.getElementById('start-screen').style.display = 'none';
     playMusic();
+    playMusic(Math.floor(Math.random() * musicTracks.length));
     sfx.pickup();
 };
 
