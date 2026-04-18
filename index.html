@@ -14,6 +14,44 @@ body{
     touch-action: none; /* Prevent scrolling on touch */
 }
 
+#start-screen {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle, #0a0a1a 0%, #020205 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    text-align: center;
+}
+
+.glow-text {
+    font-size: 48px;
+    font-weight: bold;
+    color: #8b5cf6;
+    text-shadow: 0 0 20px #8b5cf6;
+    margin-bottom: 10px;
+}
+
+#start-btn {
+    padding: 15px 40px;
+    font-size: 24px;
+    font-family: 'monospace';
+    background: #8b5cf6;
+    color: white;
+    border: none;
+    cursor: pointer;
+    margin-top: 30px;
+    box-shadow: 0 0 15px #8b5cf6;
+    transition: 0.3s;
+}
+
+#start-btn:hover {
+    background: #a78bfa;
+    transform: scale(1.1);
+}
+
 #hud{
     position:absolute;
     top:15px;
@@ -110,11 +148,19 @@ body{
 
 <canvas id="c"></canvas>
 
+<div id="start-screen">
+    <div class="glow-text">ECHO LABYRINTH<br>OMEGA</div>
+    <div style="color: #a78bfa; letter-spacing: 2px;">RETRO CHIPTUNE EDITION</div>
+    <button id="start-btn">INITIALIZE SYSTEM</button>
+    <p style="margin-top: 20px; color: #555; font-size: 12px;">WASD to Move // CLICK/TAP to Dash // SPACE to Fire</p>
+</div>
+
 <div id="hud">
     <div style="font-size: 20px; font-weight: bold; color: #8b5cf6;">ECHO LABYRINTH OMEGA</div>
     Score: <span id="score">0</span><br>
     Level: <span id="level">1</span><br>
     Shield: <span id="shield">3</span> / <span id="maxShield">3</span><br>
+    <div style="color: #fbbf24; font-weight: bold;">Combo: <span id="combo">0</span>x</div>
     <div id="xp-bar-container"><div id="xp-bar"></div></div>
 </div>
 
@@ -144,10 +190,14 @@ let xp=0;
 let xpMax=100;
 let time=0;
 let threat=0;
+let combo = 0;
+let comboTimer = 0;
+let hyperMode = 0;
 
 // Polish / Juice
 let shakeTime=0;
 let shakeMag=0;
+let hitStop = 0;
 let stars=[];
 
 // Entity Arrays
@@ -177,32 +227,126 @@ const player={
     targetY: H/2
 };
 
-// === CHIptune SOUNDTRACK ENGINE ===
-const musicTracks = [
-    './chip_music/1.mp3',
-    './chip_music/2.mp3',
-    './chip_music/3.mp3',
-    './chip_music/4.mp3'
-];
-let currentAudio = null;
-let musicVolume = 0.6;
+// === WEB AUDIO SFX ENGINE ===
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-function playMusic(index) {
-    if (currentAudio) {
-        currentAudio.pause();
-        currentAudio.currentTime = 0;
+function playSound(freq, type, duration, vol=0.1) {
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+}
+
+const sfx = {
+    shoot: () => playSound(400 + Math.random()*200, 'square', 0.1),
+    explode: () => playSound(100, 'sawtooth', 0.3, 0.2),
+    dash: () => playSound(800, 'sine', 0.2),
+    pickup: () => playSound(1200, 'square', 0.05),
+    hit: () => playSound(50, 'square', 0.2, 0.2)
+};
+
+// === COSMIC SUSPENSE MUSIC ENGINE (Procedural) ===
+const MusicEngine = {
+    active: false,
+    nodes: [],
+    intensity: 0,
+    targetIntensity: 0,
+    idleTimer: 0,
+
+    init() {
+        if (this.active) return;
+        this.active = true;
+
+        const masterGain = audioCtx.createGain();
+        masterGain.gain.value = 0.4;
+        masterGain.connect(audioCtx.destination);
+        this.masterGain = masterGain;
+
+        // 1. Cosmic Drone (Low Void)
+        const drone = audioCtx.createOscillator();
+        const droneGain = audioCtx.createGain();
+        const lpf = audioCtx.createBiquadFilter();
+
+        drone.type = 'sawtooth';
+        drone.frequency.value = 55; // A1
+        lpf.type = 'lowpass';
+        lpf.frequency.value = 200;
+
+        drone.connect(lpf);
+        lpf.connect(droneGain);
+        droneGain.connect(masterGain);
+
+        drone.start();
+        this.nodes.push(drone, droneGain, lpf);
+        this.droneGain = droneGain;
+        this.lpf = lpf;
+
+        // 2. Suspense Pulse (The Heartbeat)
+        this.pulseTimer = 0;
+    },
+
+    update() {
+        if (!this.active) return;
+
+        // Progression check: if combo or hypermode or moving, intensity goes up
+        const isMoving = Math.abs(player.vx) > 0.5 || Math.abs(player.vy) > 0.5;
+        if (combo > 0 || hyperMode > 0 || isMoving) {
+            this.idleTimer = 0;
+            this.targetIntensity = Math.max(this.targetIntensity, 0.8 + (combo * 0.05));
+        } else {
+            this.idleTimer++;
+            if (this.idleTimer > 120) { // 2 seconds idle
+                this.targetIntensity *= 0.98; // Fade out target
+                if(this.targetIntensity < 0.1) this.targetIntensity = 0.1;
+            }
+        }
+
+        // Smoothly transition intensity
+        this.intensity += (this.targetIntensity - this.intensity) * 0.05;
+
+        // Modulate Drone
+        this.droneGain.gain.value = 0.1 + (this.intensity * 0.2);
+        this.lpf.frequency.value = 100 + (this.intensity * 800);
+
+        // Pulsing Beat
+        this.pulseTimer++;
+        const bpm = 80 + (this.intensity * 40);
+        const framesPerBeat = Math.floor(3600 / bpm);
+
+        if (this.pulseTimer % framesPerBeat === 0 && this.intensity > 0.2) {
+            this.playPulse();
+        }
+    },
+
+    playPulse() {
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(40 + (this.intensity * 20), audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+        g.gain.setValueAtTime(this.intensity * 0.3, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
+        osc.connect(g);
+        g.connect(this.masterGain);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.5);
     }
-    currentAudio = new Audio(musicTracks[index % musicTracks.length]);
-    currentAudio.volume = musicVolume;
-    currentAudio.loop = true;
-    currentAudio.play().catch(e => console.log('Music autoplay blocked (local file ok on reload):', e));
+};
+
+function playMusic() {
+    MusicEngine.init();
 }
 
 function nextMusic() {
-    const nextIndex = Math.floor(Math.random() * musicTracks.length);
-    playMusic(nextIndex);
-    // quick flash on track change
     triggerShake(8, 3);
+    MusicEngine.targetIntensity += 0.5; // Surge of energy
 }
 
 // Initialize Parallax Starfield
@@ -240,6 +384,7 @@ function spawnBoss(){
 }
 
 function explosion(x,y,color,n=30){
+    sfx.explode();
     for(let i=0;i<n;i++){
         particles.push({
             x, y,
@@ -261,7 +406,6 @@ let isPaused=false;
 
 function upgradeScreen(){
     isPaused = true;
-    if (currentAudio) currentAudio.pause();
     const upgrade=document.getElementById("upgrade");
     upgrade.style.display="flex";
     upgrade.innerHTML="<h2 style='color:#fbbf24; margin-bottom: 30px; text-align: center;'>SYSTEM OVERRIDE DETECTED // SELECT UPGRADE</h2>";
@@ -272,7 +416,9 @@ function upgradeScreen(){
         {name:"MAGNETIC FIELD", f:()=>magnet=1},
         {name:"SHIELD BATTERY (+1 Max)", f:()=>{player.maxShield++; player.shield=player.maxShield;}},
         {name:"SPREAD SHOT", f:()=>player.weapon="spread"},
-        {name:"RAILGUN SHOT", f:()=>player.weapon="rail"}
+        {name:"RAILGUN SHOT", f:()=>player.weapon="rail"},
+        {name:"RICOCHET ROUNDS", f:()=>player.weapon="ricochet"},
+        {name:"PIERCING BEAM", f:()=>player.weapon="pierce"}
     ];
 
     let shuffled = pool.sort(() => 0.5 - Math.random());
@@ -286,7 +432,6 @@ function upgradeScreen(){
             p.f();
             upgrade.style.display="none";
             isPaused = false;
-            if (currentAudio) currentAudio.play();
         };
         upgrade.appendChild(card);
     }
@@ -294,7 +439,8 @@ function upgradeScreen(){
 
 function fireWeapon(){
     if(player.fire>0)return;
-    player.fire=12;
+    player.fire = hyperMode > 0 ? 6 : 12;
+    sfx.shoot();
 
     if(player.weapon==="pulse"){
         projectiles.push({ x:player.x, y:player.y, vx:0, vy:-10, friendly:1 });
@@ -309,11 +455,20 @@ function fireWeapon(){
             projectiles.push({ x:player.x, y:player.y-i*20, vx:0, vy:-15, friendly:1 });
         }
     }
+    if(player.weapon==="ricochet"){
+        projectiles.push({ x:player.x, y:player.y, vx:rand(-5,5), vy:-10, friendly:1, bounce:3 });
+    }
+    if(player.weapon==="pierce"){
+        projectiles.push({ x:player.x, y:player.y, vx:0, vy:-12, friendly:1, pierce:1 });
+    }
 }
 
 function gainXp(amount) {
+    combo++;
+    comboTimer = 120; // 2 seconds at 60fps
     xp += amount;
-    score += amount * 10;
+    score += amount * 10 * combo;
+    MusicEngine.targetIntensity += 0.1; // Progress audio on score
     if(xp >= xpMax) {
         xp -= xpMax;
         xpMax = Math.floor(xpMax * 1.5);
@@ -329,10 +484,11 @@ function damage(){
     player.shield--;
     player.shieldRegenTimer = 300;
     triggerShake(15, 8);
+    hitStop = 8;
+    sfx.hit();
     explosion(player.x,player.y,"#ff4444",50);
 
     if(player.shield<=0){
-        if (currentAudio) currentAudio.pause();
         let msg = document.createElement('div');
         msg.style.position = 'absolute';
         msg.style.top = '50%';
@@ -351,6 +507,21 @@ function damage(){
 
 function update(){
     if(isPaused) return;
+    if(hitStop > 0) { hitStop--; return; }
+
+    MusicEngine.update();
+
+    if(comboTimer > 0) {
+        comboTimer--;
+    } else {
+        combo = 0;
+    }
+
+    if(combo >= 20 && hyperMode <= 0) {
+        hyperMode = 300; // 5 seconds of hyper mode
+        triggerShake(10, 5);
+    }
+    if(hyperMode > 0) hyperMode--;
 
     time++;
     threat=(time/1500)+(score/5000);
@@ -402,6 +573,7 @@ function update(){
         }
         if(dist(player.x,player.y,s.x,s.y)<35){
             gainXp(20);
+            sfx.pickup();
             explosion(s.x,s.y,"#fbbf24", 10);
             s.x=rand(40,W-40);
             s.y=rand(40,H-40);
@@ -442,13 +614,26 @@ function update(){
         
         if(e.type==="boss"){
             e.cool--;
-            if(e.cool<0){
-                for(let j=0;j<24;j++){
-                    let a=j/24*Math.PI*2;
-                    projectiles.push({ x:e.x, y:e.y, vx:Math.cos(a)*5, vy:Math.sin(a)*5 });
+            if(e.hp < 200) {
+                // Phase 2: Spinning Lasers
+                e.rot = (e.rot || 0) + 0.05;
+                if(e.cool < 0) {
+                    for(let j=0; j<4; j++) {
+                        let a = e.rot + (j * Math.PI / 2);
+                        projectiles.push({ x:e.x, y:e.y, vx:Math.cos(a)*7, vy:Math.sin(a)*7 });
+                    }
+                    e.cool = 10;
                 }
-                e.cool=80;
-                triggerShake(5, 3);
+            } else {
+                // Phase 1: Radial Burst
+                if(e.cool<0){
+                    for(let j=0;j<24;j++){
+                        let a=j/24*Math.PI*2;
+                        projectiles.push({ x:e.x, y:e.y, vx:Math.cos(a)*5, vy:Math.sin(a)*5 });
+                    }
+                    e.cool=80;
+                    triggerShake(5, 3);
+                }
             }
             if(e.hp <= 0) {
                 explosion(e.x, e.y, "#ff0077", 100);
@@ -471,7 +656,13 @@ function update(){
     for(let p of projectiles){
         p.x+=p.vx;
         p.y+=p.vy;
-        trails.push({x: p.x, y: p.y, life: 0.8, c: p.friendly ? "#fff" : "#ff0077"});
+
+        if(p.bounce > 0) {
+            if(p.x < 0 || p.x > W) { p.vx *= -1; p.bounce--; }
+            if(p.y < 0 || p.y > H) { p.vy *= -1; p.bounce--; }
+        }
+
+        trails.push({x: p.x, y: p.y, life: 0.8, c: p.friendly ? (hyperMode > 0 ? "#fbbf24" : "#fff") : "#ff0077"});
 
         if(!p.friendly && dist(player.x,player.y,p.x,p.y)<player.r+4){
             damage();
@@ -480,8 +671,8 @@ function update(){
 
         if(p.friendly) {
             for(let e of enemies) {
-                if(dist(p.x, p.y, e.x, e.y) < 20) {
-                    p.dead = 1;
+                if(dist(p.x, p.y, e.x, e.y) < (e.type === "boss" ? 35 : 20)) {
+                    if(!p.pierce) p.dead = 1;
                     if(e.type === "boss") {
                         e.hp -= 10;
                     } else {
@@ -537,6 +728,7 @@ function update(){
     document.getElementById("level").innerText=level;
     document.getElementById("shield").innerText=Math.max(0, player.shield);
     document.getElementById("maxShield").innerText=player.maxShield;
+    document.getElementById("combo").innerText=combo;
     document.getElementById("xp-bar").style.width = (xp / xpMax * 100) + "%";
 }
 
@@ -549,7 +741,22 @@ function draw(){
         shakeTime--;
     }
 
-    ctx.fillStyle="#050507";
+    // Dynamic Cosmic Background (Darkens/Glows with Intensity)
+    const bgVal = Math.floor(MusicEngine.intensity * 10);
+    ctx.fillStyle=`rgb(${bgVal}, ${bgVal}, ${bgVal+5})`;
+    ctx.fillRect(0,0,W,H);
+
+    // --- CRT Scanlines & Vignette ---
+    // Scanlines
+    ctx.fillStyle = "rgba(18, 16, 16, 0.1)";
+    for(let i=0; i<H; i+=4) {
+        ctx.fillRect(0, i, W, 1);
+    }
+    // Vignette (Stronger for suspense)
+    let grd = ctx.createRadialGradient(W/2, H/2, W*0.1, W/2, H/2, W*0.8);
+    grd.addColorStop(0, "transparent");
+    grd.addColorStop(1, "rgba(0,0,0,0.85)");
+    ctx.fillStyle = grd;
     ctx.fillRect(0,0,W,H);
     
     for(let s of stars) {
@@ -584,25 +791,45 @@ function draw(){
         ctx.fill();
         
         if(e.type==="boss") {
+            // Radial ring
             ctx.strokeStyle="#fff";
             ctx.lineWidth=2;
             ctx.beginPath();
             ctx.arc(e.x, e.y, 35, 0, (e.hp/400) * Math.PI * 2);
             ctx.stroke();
+
+            // Screen Top Health Bar
+            ctx.fillStyle = "rgba(0,0,0,0.5)";
+            ctx.fillRect(W/2 - 200, 20, 400, 10);
+            ctx.fillStyle = "#ff0077";
+            ctx.fillRect(W/2 - 200, 20, (e.hp/400) * 400, 10);
+            ctx.strokeStyle = "#fff";
+            ctx.strokeRect(W/2 - 200, 20, 400, 10);
+            ctx.fillStyle = "#fff";
+            ctx.font = "bold 12px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("BOSS: OVERLORD ECHO", W/2, 15);
+            ctx.textAlign = "left"; // reset
         }
     }
 
     for(let p of projectiles){
-        ctx.fillStyle= p.friendly ? "#fff" : "#ff0077";
+        ctx.shadowBlur = hyperMode > 0 && p.friendly ? 25 : 15;
+        ctx.shadowColor = p.friendly ? (hyperMode > 0 ? "#fbbf24" : "#fff") : "#ff0077";
+        ctx.fillStyle= p.friendly ? (hyperMode > 0 ? "#fbbf24" : "#fff") : "#ff0077";
         ctx.beginPath();
         ctx.arc(p.x,p.y,4,0,7);
         ctx.fill();
+        ctx.shadowBlur = 0;
     }
 
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = "#8b5cf6";
     ctx.fillStyle="#8b5cf6";
     ctx.beginPath();
     ctx.arc(player.x,player.y,player.r,0,7);
     ctx.fill();
+    ctx.shadowBlur = 0;
 
     if(player.shield > 0) {
         ctx.strokeStyle = `rgba(14, 165, 233, ${player.shield / player.maxShield})`;
@@ -649,8 +876,14 @@ function loop(){
 
 // Start everything
 window.onload = function() {
-    playMusic(Math.floor(Math.random()*musicTracks.length)); // kick off chiptunes immediately
     loop();
+};
+
+document.getElementById('start-btn').onclick = function() {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    document.getElementById('start-screen').style.display = 'none';
+    playMusic();
+    sfx.pickup();
 };
 
 // Controls
@@ -678,6 +911,7 @@ function doDash() {
         player.y += player.vy * 15;
         player.dash = 45;
         triggerShake(5, 5);
+        sfx.dash();
         explosion(player.x,player.y,"#8b5cf6", 20);
     }
 }
